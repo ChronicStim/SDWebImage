@@ -19,6 +19,14 @@ FOUNDATION_STATIC_INLINE NSUInteger SDCacheCostForImage(UIImage *image) {
 #endif
 }
 
+FOUNDATION_STATIC_INLINE NSUInteger SDCacheCostForData(NSData *data) {
+#if SD_MAC
+    return data.length;
+#elif SD_UIKIT || SD_WATCH
+    return data.length;
+#endif
+}
+
 @interface SDImageCache ()
 
 #pragma mark - Properties
@@ -56,10 +64,12 @@ FOUNDATION_STATIC_INLINE NSUInteger SDCacheCostForImage(UIImage *image) {
 - (nonnull instancetype)initWithNamespace:(nonnull NSString *)ns
                        diskCacheDirectory:(nonnull NSString *)directory {
     if ((self = [super init])) {
-        NSString *fullNamespace = [@"com.hackemist.SDWebImageCache." stringByAppendingString:ns];
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        NSString *fullNamespace = [NSString stringWithFormat:@"%@.%@",bundleIdentifier,ns];
         
         // Create IO serial queue
-        _ioQueue = dispatch_queue_create("com.hackemist.SDWebImageCache", DISPATCH_QUEUE_SERIAL);
+        const char *cString = [bundleIdentifier cStringUsingEncoding:NSUTF8StringEncoding];
+        _ioQueue = dispatch_queue_create(cString, DISPATCH_QUEUE_SERIAL);
         
         _config = [[SDImageCacheConfig alloc] init];
         
@@ -655,6 +665,303 @@ FOUNDATION_STATIC_INLINE NSUInteger SDCacheCostForImage(UIImage *image) {
         }
     });
 }
+
+#pragma mark -
+#pragma mark - NSData Operation Methods
+
+#pragma mark - Store Ops
+
+- (void)storeData:(nullable NSData *)data
+           forKey:(nullable NSString *)key
+       completion:(nullable SDWebImageNoParamsBlock)completionBlock {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    [self storeData:data forKey:key toDisk:YES completion:completionBlock];
+}
+
+- (void)storeData:(nullable NSData *)data
+           forKey:(nullable NSString *)key
+           toDisk:(BOOL)toDisk
+       completion:(nullable SDWebImageNoParamsBlock)completionBlock {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+
+    if (!data || !key) {
+        if (completionBlock) {
+            completionBlock();
+        }
+        return;
+    }
+    // if memory cache is enabled
+    if (self.config.shouldCacheImagesInMemory) {
+        NSUInteger cost = SDCacheCostForData(data);
+        [self.memCache setObject:data forKey:key cost:cost];
+    }
+    
+    if (toDisk) {
+        dispatch_async(self.ioQueue, ^{
+            @autoreleasepool {
+                NSData *blockData = data;
+                [self _storeDataToDisk:blockData forKey:key];
+            }
+            
+            if (completionBlock) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completionBlock();
+                });
+            }
+        });
+    } else {
+        if (completionBlock) {
+            completionBlock();
+        }
+    }
+}
+
+- (void)storeDataToDisk:(nullable NSData *)data forKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    if (!data || !key) {
+        return;
+    }
+    dispatch_sync(self.ioQueue, ^{
+        [self _storeDataToDisk:data forKey:key];
+    });
+}
+
+// Make sure to call form io queue by caller
+- (void)_storeDataToDisk:(nullable NSData *)data forKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    if (!data || !key) {
+        return;
+    }
+    
+    if (![self.fileManager fileExistsAtPath:_diskCachePath]) {
+        [self.fileManager createDirectoryAtPath:_diskCachePath withIntermediateDirectories:YES attributes:nil error:NULL];
+    }
+    
+    // get cache Path for image key
+    NSString *cachePathForKey = [self defaultCachePathForKey:key];
+    // transform to NSUrl
+    NSURL *fileURL = [NSURL fileURLWithPath:cachePathForKey];
+    
+    [data writeToURL:fileURL options:self.config.diskCacheWritingOptions error:nil];
+    
+    // disable iCloud backup
+    if (self.config.shouldDisableiCloud) {
+        [fileURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+    }
+}
+
+#pragma mark - Query and Retrieve Ops
+
+- (void)diskDataExistsWithKey:(nullable NSString *)key completion:(nullable SDWebImageCheckCacheCompletionBlock)completionBlock {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    dispatch_async(self.ioQueue, ^{
+        BOOL exists = [self _diskDataExistsWithKey:key];
+        if (completionBlock) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completionBlock(exists);
+            });
+        }
+    });
+}
+
+- (BOOL)diskDataExistsWithKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    if (!key) {
+        return NO;
+    }
+    __block BOOL exists = NO;
+    dispatch_sync(self.ioQueue, ^{
+        exists = [self _diskDataExistsWithKey:key];
+    });
+    
+    return exists;
+}
+
+// Make sure to call form io queue by caller
+- (BOOL)_diskDataExistsWithKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    if (!key) {
+        return NO;
+    }
+    BOOL exists = [self.fileManager fileExistsAtPath:[self defaultCachePathForKey:key]];
+    
+    // fallback because of https://github.com/rs/SDWebImage/pull/976 that added the extension to the disk file name
+    // checking the key with and without the extension
+    if (!exists) {
+        exists = [self.fileManager fileExistsAtPath:[self defaultCachePathForKey:key].stringByDeletingPathExtension];
+    }
+    
+    return exists;
+}
+
+- (nullable NSData *)dataFromMemoryCacheForKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    return [self.memCache objectForKey:key];
+}
+
+- (nullable NSData *)dataFromDiskCacheForKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    NSData *diskData = [self diskDataForKey:key];
+    if (diskData && self.config.shouldCacheImagesInMemory) {
+        NSUInteger cost = SDCacheCostForData(diskData);
+        [self.memCache setObject:diskData forKey:key cost:cost];
+    }
+    
+    return diskData;
+}
+
+- (nullable NSData *)dataFromCacheForKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    // First check the in-memory cache...
+    NSData *data = [self dataFromMemoryCacheForKey:key];
+    if (data) {
+        return data;
+    }
+    
+    // Second check the disk cache...
+    data = [self dataFromDiskCacheForKey:key];
+    return data;
+}
+
+- (nullable NSData *)diskDataBySearchingAllPathsForKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    NSString *defaultPath = [self defaultCachePathForKey:key];
+    NSData *data = [NSData dataWithContentsOfFile:defaultPath options:self.config.diskCacheReadingOptions error:nil];
+    if (data) {
+        return data;
+    }
+    
+    // fallback because of https://github.com/rs/SDWebImage/pull/976 that added the extension to the disk file name
+    // checking the key with and without the extension
+    data = [NSData dataWithContentsOfFile:defaultPath.stringByDeletingPathExtension options:self.config.diskCacheReadingOptions error:nil];
+    if (data) {
+        return data;
+    }
+    
+    NSArray<NSString *> *customPaths = [self.customPaths copy];
+    for (NSString *path in customPaths) {
+        NSString *filePath = [self cachePathForKey:key inPath:path];
+        NSData *customPathdata = [NSData dataWithContentsOfFile:filePath options:self.config.diskCacheReadingOptions error:nil];
+        if (customPathdata) {
+            return customPathdata;
+        }
+        
+        // fallback because of https://github.com/rs/SDWebImage/pull/976 that added the extension to the disk file name
+        // checking the key with and without the extension
+        customPathdata = [NSData dataWithContentsOfFile:filePath.stringByDeletingPathExtension options:self.config.diskCacheReadingOptions error:nil];
+        if (customPathdata) {
+            return customPathdata;
+        }
+    }
+    
+    return nil;
+}
+
+- (nullable NSData *)diskDataForKey:(nullable NSString *)key {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    NSData *data = [self diskDataBySearchingAllPathsForKey:key];
+    return data;
+}
+
+- (NSOperation *)queryDataCacheOperationForKey:(NSString *)key done:(SDDataCacheQueryCompletedBlock)doneBlock {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    return [self queryDataCacheOperationForKey:key options:0 done:doneBlock];
+}
+
+- (nullable NSOperation *)queryDataCacheOperationForKey:(nullable NSString *)key options:(SDImageCacheOptions)options done:(nullable SDDataCacheQueryCompletedBlock)doneBlock {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    if (!key) {
+        if (doneBlock) {
+            doneBlock(nil, nil, SDImageCacheTypeNone);
+        }
+        return nil;
+    }
+    
+    // First check the in-memory cache...
+    NSData *data = [self dataFromMemoryCacheForKey:key];
+    BOOL shouldQueryMemoryOnly = (data && !(options & SDImageCacheQueryDataWhenInMemory));
+    if (shouldQueryMemoryOnly) {
+        if (doneBlock) {
+            doneBlock(data, nil, SDImageCacheTypeMemory);
+        }
+        return nil;
+    }
+    
+    NSOperation *operation = [NSOperation new];
+    void(^queryDiskBlock)(void) =  ^{
+        if (operation.isCancelled) {
+            // do not call the completion if cancelled
+            return;
+        }
+        
+        @autoreleasepool {
+            NSData *diskData = [self diskDataBySearchingAllPathsForKey:key];
+            SDImageCacheType cacheType = SDImageCacheTypeDisk;
+            if (data) {
+                // the data is from in-memory cache
+                diskData = data;
+                cacheType = SDImageCacheTypeMemory;
+            } else if (diskData) {
+                if (diskData && self.config.shouldCacheImagesInMemory) {
+                    NSUInteger cost = SDCacheCostForData(diskData);
+                    [self.memCache setObject:diskData forKey:key cost:cost];
+                }
+            }
+            
+            if (doneBlock) {
+                if (options & SDImageCacheQueryDiskSync) {
+                    doneBlock(diskData, diskData, cacheType);
+                } else {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        doneBlock(diskData, diskData, cacheType);
+                    });
+                }
+            }
+        }
+    };
+    
+    if (options & SDImageCacheQueryDiskSync) {
+        queryDiskBlock();
+    } else {
+        dispatch_async(self.ioQueue, queryDiskBlock);
+    }
+    
+    return operation;
+}
+
+#pragma mark - Remove Ops
+
+- (void)removeDataForKey:(nullable NSString *)key withCompletion:(nullable SDWebImageNoParamsBlock)completion {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    [self removeDataForKey:key fromDisk:YES withCompletion:completion];
+}
+
+- (void)removeDataForKey:(nullable NSString *)key fromDisk:(BOOL)fromDisk withCompletion:(nullable SDWebImageNoParamsBlock)completion {
+    NSAssert(self.config.cacheStoresNSDataObjects,@"Cache must be configured for NSData objects before using this method");
+    if (key == nil) {
+        return;
+    }
+    
+    if (self.config.shouldCacheImagesInMemory) {
+        [self.memCache removeObjectForKey:key];
+    }
+    
+    if (fromDisk) {
+        dispatch_async(self.ioQueue, ^{
+            [self.fileManager removeItemAtPath:[self defaultCachePathForKey:key] error:nil];
+            
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion();
+                });
+            }
+        });
+    } else if (completion){
+        completion();
+    }
+    
+}
+
 
 @end
 

@@ -49,4 +49,9 @@
  */
 @property (assign, nonatomic) NSUInteger maxCacheSize;
 
+/**
+ * Flag which indicates whether the cache stores images (flag == NO) or data objects (flag == YES).
+ */
+@property (nonatomic, assign) BOOL cacheStoresNSDataObjects;
+
 @end

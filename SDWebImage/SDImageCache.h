@@ -37,6 +37,7 @@ typedef NS_OPTIONS(NSUInteger, SDImageCacheOptions) {
 };
 
 typedef void(^SDCacheQueryCompletedBlock)(UIImage * _Nullable image, NSData * _Nullable data, SDImageCacheType cacheType);
+typedef void(^SDDataCacheQueryCompletedBlock)(NSData * _Nullable imageData, NSData * _Nullable data, SDImageCacheType cacheType);
 
 typedef void(^SDWebImageCheckCacheCompletionBlock)(BOOL isInCache);
 
@@ -65,6 +66,11 @@ typedef void(^SDWebImageCalculateSizeBlock)(NSUInteger fileCount, NSUInteger tot
  * The maximum number of objects the cache should hold.
  */
 @property (assign, nonatomic) NSUInteger maxMemoryCountLimit;
+
+/**
+ * The parent path for all cache content stored to disk. This property is Read-only.
+ */
+@property (nonatomic, nonnull, readonly) NSString *diskCachePath;
 
 #pragma mark - Singleton and initialization
 
@@ -291,5 +297,125 @@ typedef void(^SDWebImageCalculateSizeBlock)(NSUInteger fileCount, NSUInteger tot
  *  @return the default cache path
  */
 - (nullable NSString *)defaultCachePathForKey:(nullable NSString *)key;
+
+#pragma mark -
+#pragma mark - NSData Mode Methods
+
+#pragma mark - Store Ops
+
+/**
+ * Asynchronously store Data into memory and disk cache at the given key.
+ *
+ * @param data           The data to store
+ * @param key             The unique image cache key, usually it's image absolute URL
+ * @param completionBlock A block executed after the operation is finished
+ */
+- (void)storeData:(nullable NSData *)data
+           forKey:(nullable NSString *)key
+       completion:(nullable SDWebImageNoParamsBlock)completionBlock;
+
+/**
+ * Asynchronously store data into memory and disk cache at the given key.
+ *
+ * @param data           The data to store
+ * @param key             The unique image cache key, usually it's image absolute URL
+ * @param toDisk          Store the image to disk cache if YES
+ * @param completionBlock A block executed after the operation is finished
+ */
+- (void)storeData:(nullable NSData *)data
+           forKey:(nullable NSString *)key
+           toDisk:(BOOL)toDisk
+       completion:(nullable SDWebImageNoParamsBlock)completionBlock;
+
+/**
+ * Synchronously store NSData into disk cache at the given key.
+ *
+ * @warning This method is synchronous, make sure to call it from the ioQueue
+ *
+ * @param data  The data to store
+ * @param key        The unique data cache key, usually it's image absolute URL
+ */
+- (void)storeDataToDisk:(nullable NSData *)data forKey:(nullable NSString *)key;
+
+#pragma mark - Query and Retrieve Ops
+
+/**
+ *  Async check if data exists in disk cache already (does not load the data)
+ *
+ *  @param key             the key describing the url
+ *  @param completionBlock the block to be executed when the check is done.
+ *  @note the completion block will be always executed on the main queue
+ */
+- (void)diskDataExistsWithKey:(nullable NSString *)key completion:(nullable SDWebImageCheckCacheCompletionBlock)completionBlock;
+
+/**
+ *  Sync check if data exists in disk cache already (does not load the data)
+ *
+ *  @param key             the key describing the url
+ */
+- (BOOL)diskDataExistsWithKey:(nullable NSString *)key;
+
+#pragma mark - Query and Retrieve Ops
+
+/**
+ * Operation that queries the cache asynchronously and call the completion when done.
+ *
+ * @param key       The unique key used to store the wanted data
+ * @param doneBlock The completion block. Will not get called if the operation is cancelled
+ *
+ * @return a NSOperation instance containing the cache op
+ */
+- (nullable NSOperation *)queryDataCacheOperationForKey:(nullable NSString *)key done:(nullable SDDataCacheQueryCompletedBlock)doneBlock;
+
+/**
+ * Operation that queries the cache asynchronously and call the completion when done.
+ *
+ * @param key       The unique key used to store the wanted image
+ * @param options   A mask to specify options to use for this cache query
+ * @param doneBlock The completion block. Will not get called if the operation is cancelled
+ *
+ * @return a NSOperation instance containing the cache op
+ */
+- (nullable NSOperation *)queryDataCacheOperationForKey:(nullable NSString *)key options:(SDImageCacheOptions)options done:(nullable SDDataCacheQueryCompletedBlock)doneBlock;
+
+/**
+ * Query the memory cache synchronously.
+ *
+ * @param key The unique key used to store the data
+ */
+- (nullable NSData *)dataFromMemoryCacheForKey:(nullable NSString *)key;
+
+/**
+ * Query the disk cache synchronously.
+ *
+ * @param key The unique key used to store the data
+ */
+- (nullable NSData *)dataFromDiskCacheForKey:(nullable NSString *)key;
+
+/**
+ * Query the cache (memory and or disk) synchronously after checking the memory cache.
+ *
+ * @param key The unique key used to store the data
+ */
+- (nullable NSData *)dataFromCacheForKey:(nullable NSString *)key;
+
+#pragma mark - Remove Ops
+
+/**
+ * Remove the data from memory and disk cache asynchronously
+ *
+ * @param key             The unique data cache key
+ * @param completion      A block that should be executed after the data has been removed (optional)
+ */
+- (void)removeDataForKey:(nullable NSString *)key withCompletion:(nullable SDWebImageNoParamsBlock)completion;
+
+/**
+ * Remove the data from memory and optionally disk cache asynchronously
+ *
+ * @param key             The unique data cache key
+ * @param fromDisk        Also remove cache entry from disk if YES
+ * @param completion      A block that should be executed after the data has been removed (optional)
+ */
+- (void)removeDataForKey:(nullable NSString *)key fromDisk:(BOOL)fromDisk withCompletion:(nullable SDWebImageNoParamsBlock)completion;
 
 @end
