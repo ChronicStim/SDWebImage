@@ -167,7 +167,7 @@ FOUNDATION_STATIC_INLINE NSUInteger SDCacheCostForData(NSData *data) {
         NSString *fullNamespace = [NSString stringWithFormat:@"%@.%@",bundleIdentifier,ns];
         
         // Create IO serial queue
-        const char *cString = [bundleIdentifier cStringUsingEncoding:NSUTF8StringEncoding];
+        const char *cString = [fullNamespace cStringUsingEncoding:NSUTF8StringEncoding];
         _ioQueue = dispatch_queue_create(cString, DISPATCH_QUEUE_SERIAL);
         
         _config = [[SDImageCacheConfig alloc] init];
